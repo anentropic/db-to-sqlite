@@ -8,8 +8,9 @@ from sqlite_utils import Database
 @click.version_option()
 @click.argument("connection")
 @click.argument("path", type=click.Path(exists=False), required=True)
-@click.option("--all", help="Detect and copy all tables", is_flag=True)
+@click.option("--all", "all_", help="Detect and copy all tables", is_flag=True)
 @click.option("--table", help="Specific tables to copy", multiple=True)
+@click.option("--schema", help="(Postgres only) Specific schema containing the table(s) to copy")
 @click.option("--skip", help="When using --all skip these tables", multiple=True)
 @click.option(
     "--redact",
@@ -28,7 +29,7 @@ from sqlite_utils import Database
 )
 @click.option("-p", "--progress", help="Show progress bar", is_flag=True)
 def cli(
-    connection, path, all, table, skip, redact, sql, output, pk, index_fks, progress
+    connection, path, all_, table, schema, skip, redact, sql, output, pk, index_fks, progress
 ):
     """
     Load data from any database into SQLite.
@@ -45,9 +46,9 @@ def cli(
 
     More: https://docs.sqlalchemy.org/en/13/core/engines.html#database-urls
     """
-    if not all and not table and not sql:
+    if not all_ and not table and not sql:
         raise click.ClickException("--all OR --table OR --sql required")
-    if skip and not all:
+    if skip and not all_:
         raise click.ClickException("--skip can only be used with --all")
     redact_columns = {}
     for table_name, column_name in redact:
@@ -55,10 +56,18 @@ def cli(
     db = Database(path)
     db_conn = create_engine(connection).connect()
     inspector = inspect(db_conn)
+    if schema:
+        print(f"WITH SCHEMA: {schema}")
+        db_conn.execute("SET search_path=%s,public;", (schema,))
     # Figure out which tables we are copying, if any
     tables = table
-    if all:
-        tables = inspector.get_table_names()
+    if all_:
+        if schema:
+            print(f"WITH SCHEMA: {schema}")
+            tables = inspector.get_table_names(schema=schema)
+        else:
+            tables = inspector.get_table_names()
+        print(f"WITH ALL: {tables}")
     if tables:
         foreign_keys_to_add = []
         for i, table in enumerate(tables):
@@ -145,9 +154,9 @@ def cli(
         db.index_foreign_keys()
 
 
-def detect_primary_key(db_conn, table):
+def detect_primary_key(db_conn, table, schema=None):
     inspector = inspect(db_conn)
-    pks = inspector.get_pk_constraint(table)["constrained_columns"]
+    pks = inspector.get_pk_constraint(table, schema=schema)["constrained_columns"]
     if len(pks) > 1:
         raise click.ClickException("Multiple primary keys not currently supported")
     return pks[0] if pks else None
